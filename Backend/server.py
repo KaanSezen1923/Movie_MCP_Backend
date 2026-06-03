@@ -3,11 +3,9 @@ import requests
 from mcp.server.fastmcp import FastMCP
 from dotenv import load_dotenv
 
-# Yapılandırma
 load_dotenv()
 AUTH_KEY = os.getenv("AUTH_KEY")
 BASE_URL = "https://api.themoviedb.org/3"
-
 
 mcp = FastMCP("TMDB Movie Explorer")
 
@@ -26,7 +24,7 @@ GENRE_DICT = {
 
 REVERSE_GENRE_DICT = {v: k for k, v in GENRE_DICT.items()}
 
-# --- Yardımcı Fonksiyonlar (Tool Olarak Tanımlanmadı) ---
+# --- Yardımcı Fonksiyonlar ---
 
 def get_person_id(name: str):
     search_url = f"{BASE_URL}/search/person"
@@ -49,69 +47,39 @@ def get_movie_id(title: str):
     results = resp.json().get('results', [])
     return results[0]['id'] if results else None
 
-def get_movie_trailer(movie_title: str) -> str:
-    """
-    Bir filmin ismine göre YouTube fragman bağlantısını bulur.
-    Kullanıcı bir filmin fragmanını, videosunu veya 'izlemek istiyorum' dediğinde bu aracı kullan.
-    """
+def get_movie_trailer_url(movie_title: str) -> str:
+    """Sadece YouTube fragman URL'sini (veya None) döner."""
     movie_id = get_movie_id(movie_title)
     if not movie_id:
-        return f"'{movie_title}' isimli film bulunamadı."
+        return None
 
     video_url = f"{BASE_URL}/movie/{movie_id}/videos"
-    params = {"language": "en-US"}
-    resp = requests.get(video_url, headers=headers, params=params)
-    
+    resp = requests.get(video_url, headers=headers, params={"language": "en-US"})
     if resp.status_code != 200:
-        return "Video verileri alınırken bir hata oluştu."
+        return None
 
     videos = resp.json().get('results', [])
-    
-    # Fragman (Trailer) tipinde ve YouTube üzerinde olan bir video ara
-    trailer = next(
-        (v for v in videos if v['type'] == 'Trailer' and v['site'] == 'YouTube'), 
-        None
-    )
-
-    # Eğer spesifik bir fragman yoksa herhangi bir videoyu al
+    trailer = next((v for v in videos if v['type'] == 'Trailer' and v['site'] == 'YouTube'), None)
     if not trailer and videos:
         trailer = videos[0]
 
-    if trailer:
-        youtube_url = f"https://www.youtube.com/watch?v={trailer['key']}"
-        return f"🎬 {movie_title} Fragmanı:\n🔗 {youtube_url}\n📺 Tip: {trailer['type']}"
-    
-    return f"'{movie_title}' için uygun bir fragman bulunamadı."
+    return f"https://www.youtube.com/watch?v={trailer['key']}" if trailer else None
 
-def get_watch_platforms(movie_id: int) -> str:
-    """
-    Filmin Türkiye'deki (veya genel) izleme platformlarını döner.
-    """
+def get_watch_platforms(movie_id: int) -> list:
+    """Platform isimlerini ham bir liste (list) olarak döner."""
     watch_url = f"{BASE_URL}/movie/{movie_id}/watch/providers"
-    # TR pazarındaki platformlar için 'watch_region' parametresini kullanıyoruz
-    params = {"watch_region": "TR"} 
-    resp = requests.get(watch_url, headers=headers, params=params)
-    
-    if resp.status_code != 200:
-        return "Platform bilgisi alınamadı."
-
-    results = resp.json().get('results', {}).get('TR', {})
+    resp = requests.get(watch_url, headers=headers, params={"watch_region": "TR"})
     
     platforms = []
-    
-    # 'flatrate' abonelik tabanlı (Netflix vb.), 'buy' ise satın alma seçenekleridir
-    if 'flatrate' in results:
-        for provider in results['flatrate']:
-            platforms.append(provider['provider_name'])
+    if resp.status_code == 200:
+        results = resp.json().get('results', {}).get('TR', {})
+        if 'flatrate' in results:
+            platforms = [p['provider_name'] for p in results['flatrate']]
             
-    if platforms:
-        return f"📺 İzleyebileceğin Platformlar: {', '.join(platforms)}"
-    
-    return "🚫 Şu an popüler bir platformda yayında değil (Sadece kiralama/satın alma olabilir)."
+    return platforms
 
-# --- MCP Tool Tanımı ---
 def get_movie_credits(movie_id: int):
-    """Filmin yönetmen ve başrol oyuncularını getirir."""
+    """Filmin yönetmen ve başrol oyuncularını döner."""
     credits_url = f"{BASE_URL}/movie/{movie_id}/credits"
     resp = requests.get(credits_url, headers=headers)
     
@@ -119,27 +87,17 @@ def get_movie_credits(movie_id: int):
         return "Bilinmiyor", "Bilinmiyor"
 
     data = resp.json()
-    
-    # İlk 3 oyuncuyu al
     cast = [c['name'] for c in data.get('cast', [])[:3]]
     cast_str = ", ".join(cast) if cast else "Bilinmiyor"
-    
-    # Yönetmeni bul
     director = next((c['name'] for c in data.get('crew', []) if c['job'] == 'Director'), "Bilinmiyor")
     
     return director, cast_str
 
-@mcp.tool()
-def search_movies_by_filters(
-    genre_name: str = None, 
-    actor_name: str = None, 
-    director_name: str = None, 
-    keyword: str = None, 
-    min_rating: float = 0.0
-) -> str:
+# --- Çekirdek Veri Fonksiyonu (API İçin Temiz JSON) ---
+def fetch_movies_json(genre_name=None, actor_name=None, director_name=None, keyword=None, min_rating=0.0) -> list:
     """
-    Belirli kriterlere göre film araması yapar. 
-    LLM bu aracı; kullanıcı bir aktör, yönetmen, tür veya minimum puan belirttiğinde kullanır.
+    Kriterlere göre filmleri bulup temiz bir Sözlük (Dictionary) listesi döner.
+    Arayüz uygulamaları Regex'e bulaşmadan bu fonksiyonu (veya API endpointini) kullanır.
     """
     discover_url = f"{BASE_URL}/discover/movie"
     params = {
@@ -152,70 +110,81 @@ def search_movies_by_filters(
     if genre_name:
         gid = GENRE_DICT.get(genre_name.title())
         if gid: params["with_genres"] = gid
-
     if actor_name:
         aid = get_person_id(actor_name)
         if aid: params["with_cast"] = aid
-
     if director_name:
         did = get_person_id(director_name)
         if did: params["with_crew"] = did
-
     if keyword:
         kid = get_keyword_id(keyword)
         if kid: params["with_keywords"] = kid
-
     if min_rating > 0:
         params["vote_average.gte"] = min_rating
-        params["vote_count.gte"] = 50  # Kaliteli sonuçlar için
+        params["vote_count.gte"] = 50 
 
     resp = requests.get(discover_url, headers=headers, params=params)
-    
     if resp.status_code != 200:
-        return f"Hata oluştu: {resp.status_code}"
+        return []
 
-    movies = resp.json().get('results', []) # İlk 10 sonucu dön
+    movies = resp.json().get('results', [])[:10]
     
-    if not movies:
-        return "Aradığınız kriterlere uygun film bulunamadı."
-
-    # Sonuçları LLM'in okuyabileceği temiz bir metne dönüştür
-    output = []
+    output_data = []
     for m in movies:
         movie_id = m.get('id')
-        platform_info = get_watch_platforms(movie_id)
-        director, cast = get_movie_credits(movie_id)
         title = m.get('title', 'Bilinmiyor')
-        year = m.get('release_date', '????')[:4]
-        rating = m.get('vote_average', 0)
-        overview = m.get('overview', 'Özet bulunamadı.')[:150]
-        poster = m.get('poster_path')
-
-        
-        # Tür ID'lerini isimlere çevir
+        director, cast = get_movie_credits(movie_id)
         g_ids = m.get('genre_ids', [])
-        g_names = [REVERSE_GENRE_DICT.get(gid, "Unknown") for gid in g_ids]
-        genres_str = ", ".join(g_names)
-        trailer=get_movie_trailer(title)
+        poster = m.get('poster_path')
+        
+        movie_dict = {
+            "title": title,
+            "year": m.get('release_date', '????')[:4],
+            "rating": m.get('vote_average', 0),
+            "genres": ", ".join([REVERSE_GENRE_DICT.get(gid, "Unknown") for gid in g_ids]),
+            "director": director,
+            "cast": cast,
+            "overview": m.get('overview', 'Özet bulunamadı.'),
+            "platforms": get_watch_platforms(movie_id),
+            "poster_url": f"https://image.tmdb.org/t/p/w500{poster}" if poster else None,
+            "trailer_url": get_movie_trailer_url(title)
+        }
+        output_data.append(movie_dict)
+        
+    return output_data
 
+# --- MCP Tool Tanımı (LLM İçin Sarmalayıcı) ---
+@mcp.tool()
+def search_movies_by_filters(genre_name: str=None, actor_name: str=None, director_name: str=None, keyword: str=None, min_rating: float=0.0) -> str:
+    """
+    Belirli kriterlere göre film araması yapar. 
+    LLM bu aracı; kullanıcı bir aktör, yönetmen, tür veya minimum puan belirttiğinde kullanır.
+    """
+    movies_data = fetch_movies_json(genre_name, actor_name, director_name, keyword, min_rating)
+    
+    if not movies_data:
+        return "Aradığınız kriterlere uygun film bulunamadı."
+
+    # JSON verisini LLM'in okuyabileceği temiz bir metne dönüştür
+    output = []
+    for m in movies_data:
+        platforms_str = f"📺 İzleyebileceğin Platformlar: {', '.join(m['platforms'])}" if m['platforms'] else "🚫 Şu an popüler bir platformda yayında değil."
+        
         movie_info = (
-            f"🎬 {title} ({year})\n"
-            f"⭐ Puan: {rating} | 🎭 Türler: {genres_str}\n"
-            f"👤 Yönetmen: {director} | 👥 Oyuncular: {cast}\n"
-            f"📝 Özet: {overview}...\n"
-            f"📺 Platformlar: {platform_info}\n"
+            f"🎬 {m['title']} ({m['year']})\n"
+            f"⭐ Puan: {m['rating']} | 🎭 Türler: {m['genres']}\n"
+            f"👤 Yönetmen: {m['director']} | 👥 Oyuncular: {m['cast']}\n"
+            f"📝 Özet: {m['overview'][:150]}...\n"
+            f"{platforms_str}\n"
         )
-        if poster:
-            movie_info += f"🖼️ Poster: https://image.tmdb.org/t/p/w500{poster}\n"
-        if trailer:
-            movie_info += f"{trailer}\n"
+        if m['poster_url']:
+            movie_info += f"🖼️ Poster: {m['poster_url']}\n"
+        if m['trailer_url']:
+            movie_info += f"🔗 Fragman: {m['trailer_url']}\n"
 
         output.append(movie_info + "-" * 30)
     
     return "\n".join(output)
-
-
-
 
 if __name__ == "__main__":
     mcp.run()
