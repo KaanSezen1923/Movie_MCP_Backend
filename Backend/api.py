@@ -7,7 +7,7 @@ from pydantic import BaseModel,EmailStr, field_validator
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from dotenv import load_dotenv
-from shared import ctx
+from shared import ctx, chat_statuses
 from client import get_ollama_tools, generate_user_profile, app as graph_app
 import psycopg2
 import bcrypt
@@ -493,10 +493,12 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         "intent": "",
         "final_output": "",
         "tool_calls": [],
-        "tool_results": []
+        "tool_results": [],
+        "session_id": request.session_id
     }
     
     try:
+        chat_statuses[request.session_id] = "🔍 Sorgu analiz ediliyor..."
         # graph_app (client.py'daki app) çağrılıyor
         result = await graph_app.ainvoke(initial_state) 
         answer = result.get("final_output", "Üzgünüm, şu an öneri yapamıyorum.")
@@ -505,6 +507,8 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     except Exception as e:
         print(f"Grafik Hatası: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        chat_statuses.pop(request.session_id, None)
 
     save_chat_to_db(request.user_id, "user", request.prompt, request.session_id)
     save_chat_to_db(request.user_id, "assistant", answer, request.session_id)
@@ -515,6 +519,11 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         background_tasks.add_task(profile_update_task, request.user_id)
 
     return {"answer": answer, "tool_calls": tool_calls, "tool_results": tool_results}
+
+@app.get("/chat/status/{session_id}")
+async def get_chat_status(session_id: str):
+    status = chat_statuses.get(session_id, "")
+    return {"status": status}
 
 def get_user_message_count(user_id: int):
     conn = get_db_connection()
@@ -654,7 +663,7 @@ async def generate_push_notification(user_id: int):
     
     try:
         response = ollama.chat(
-            model=os.getenv("OLLAMA_MODEL"), # Kullandığın model
+            model='gpt-oss:120b-cloud', # Kullandığın model
             messages=[
                 {'role': 'system', 'content': system_prompt},
                 {'role': 'user', 'content': user_msg}
