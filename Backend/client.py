@@ -2,7 +2,7 @@ import json
 import re
 import os
 from pydantic import BaseModel
-from shared import ctx, GraphState
+from shared import ctx, GraphState, chat_statuses
 import ollama
 from typing import TypedDict, Annotated, List
 from langgraph.graph import StateGraph, END
@@ -22,8 +22,13 @@ class GraphState(TypedDict):
     tools: List[dict] # API'den gelen tool tanımları
     tool_calls: list   # Çağrılan tool'ların adı + argümanları
     tool_results: list # MCP server'd an dönen ham veriler
+    session_id: str
 
 async def analyze_intent_node(state: GraphState):
+    session_id = state.get("session_id")
+    if session_id:
+        chat_statuses[session_id] = "🔍 Sorgu analiz ediliyor..."
+
     model_name = MODEL_NAME
     intent_instructions = """
     Sen bir Film Botu Yönlendiricisisin. 
@@ -51,6 +56,10 @@ async def recommendation_node(state: GraphState):
       4. Kalite Kontrolü    — parse edilen JSON'da film listesi boşsa kullanıcıya
                               anlamlı bir mesaj döndür.
     """
+    session_id = state.get("session_id")
+    if session_id:
+        chat_statuses[session_id] = "🧠 Öneri motoru hazırlanıyor..."
+
     model_name = MODEL_NAME
     MAX_TURNS   = 3   # Agentic döngü üst sınırı
 
@@ -69,10 +78,10 @@ Kullanıcı Personası: {state['persona']}
 Şema:
 {{
   "mood": "kullanıcının ruh hali (örn: üzgün, heyecanlı, nostaljik, keyifli, ...)",
-  "genre": "en uygun TMDB türü — sadece şunlardan biri seç: Action, Adventure, Animation, Comedy, Crime, Documentary, Drama, Family, Fantasy, History, Horror, Music, Mystery, Romance, Science Fiction, Thriller, War, Western — veya null",
+  "genre": "en uygun TMDB türü/türleri — şu listeden seç: Action, Adventure, Animation, Comedy, Crime, Documentary, Drama, Family, Fantasy, History, Horror, Music, Mystery, Romance, Science Fiction, Thriller, War, Western. Kullanıcı BİRDEN FAZLA tür istiyorsa (örn: 'bilim kurgu ve fantastik') bunları virgülle ayırarak TEK bir string olarak yaz: 'Science Fiction,Fantasy'. Tür belirtilmemişse null.",
   "director_name": "açıkça belirtilmişse yönetmen adı, yoksa null",
   "actor_name": "açıkça belirtilmişse oyuncu adı, yoksa null",
-  "keyword": "temayı özetleyen 1-2 kelimelik anahtar (örn: space, revenge, time travel), yoksa null",
+  "keyword": "temayı özetleyen 1-2 kelimelik anahtar (örn: space, revenge, time travel). ASLA 'genre' alanındaki bir türü (fantasy, sci-fi vb.) buraya tekrar yazma — bu, aramayı gereksiz yere daraltıp sonuç bulunamamasına yol açar. Uygun bir tema yoksa null.",
   "reference_movie": "kullanıcının açıkça beğendiğini/izlediğini belirttiği ve 'buna benzer' dediği spesifik bir film adı varsa buraya yaz (örn: 'Açlık Oyunları çok beğendim, benzer öner' -> 'The Hunger Games'), film adını İngilizce/orijinal adıyla yaz, yoksa null",
   "min_rating": "minimum IMDb puanı 0.0-10.0 arasında float, belirtilmemişse 6.5",
   "avoid": "kullanıcının istemediği tür veya konu varsa buraya yaz, yoksa null",
@@ -119,7 +128,14 @@ GÖREV:
   çünkü tür/anahtar kelime bazlı arama spesifik bir filme olan benzerliği yakalayamaz.
 - Kullanıcı tür, oyuncu, yönetmen veya genel bir mood/tema belirtiyorsa (spesifik bir referans film YOKSA)
   'search_movies_by_filters' aracını MUTLAKA kullan.
-- Araç boş sonuç dönerse farklı parametrelerle tekrar dene (keyword veya genre değiştir).
+- Kullanıcı BİRDEN FAZLA tür istiyorsa (örn: "bilim kurgu ve fantastik filmler"), TEK bir çağrıda
+  genre_name parametresine türleri virgülle ayırarak ver (örn: genre_name="Science Fiction,Fantasy").
+  Bunun için iki ayrı arama YAPMA — tool bu türlerden herhangi birine sahip filmleri (OR mantığı) döner.
+- keyword parametresine ASLA genre_name içindeki bir türle aynı/benzer kelimeyi yazma (örn: genre_name
+  "Fantasy" iken keyword="fantasy" yazma). Bu, filtreleri gereksiz yere daraltıp sonuç bulunamamasına yol açar.
+- Araç boş sonuç dönerse: önce min_rating'i düşürerek veya keyword'ü kaldırarak tekrar dene; türleri
+  kesinlikle sessizce düşürüp kullanıcının istemediği bir sonucu (örn. sadece tek tür) onun istediği
+  gibi sunma — eğer bir türü aramadan çıkarmak zorunda kaldıysan, bunu 'text' alanında kullanıcıya belirt.
 - Kullanıcıya hitap ederken ruh haline uygun, samimi ve kişiselleştirilmiş bir ton seç.
 
 NİHAİ CEVAP FORMATI — SADECE JSON, başka hiçbir metin ya da markdown olmayacak:
@@ -164,10 +180,14 @@ NİHAİ CEVAP FORMATI — SADECE JSON, başka hiçbir metin ya da markdown olmay
         if not message.get('tool_calls'):
             # Model artık tool çağırmıyor — cevabı al ve döngüyü kır
             raw_content = message.get('content', '')
+            if session_id:
+                chat_statuses[session_id] = "✍️ Yanıt oluşturuluyor..."
             break
 
         # Tool çağrıları var — işle
         tool_was_called = True
+        if session_id:
+            chat_statuses[session_id] = "🎬 TMDB'den filmler çekiliyor..."
         current_messages.append(message)
 
         for tool_call in message['tool_calls']:
@@ -219,6 +239,8 @@ NİHAİ CEVAP FORMATI — SADECE JSON, başka hiçbir metin ya da markdown olmay
 
         if fallback_args:
             try:
+                if session_id:
+                    chat_statuses[session_id] = "🎬 TMDB'den filmler çekiliyor (Yedek)..."
                 result          = await ctx.session.call_tool(tool_name, fallback_args)
                 raw_result_text = result.content[0].text
                 tool_calls_log.append({"tool_name": tool_name, "arguments": fallback_args})
@@ -228,6 +250,8 @@ NİHAİ CEVAP FORMATI — SADECE JSON, başka hiçbir metin ya da markdown olmay
                 current_messages.append({
                     'role': 'tool', 'content': raw_result_text, 'name': tool_name
                 })
+                if session_id:
+                    chat_statuses[session_id] = "✍️ Yanıt oluşturuluyor..."
                 final_resp  = ollama.chat(
                     model=model_name,
                     messages=current_messages,
@@ -278,6 +302,9 @@ NİHAİ CEVAP FORMATI — SADECE JSON, başka hiçbir metin ya da markdown olmay
    
 
 async def general_chat_node(state: GraphState):
+    session_id = state.get("session_id")
+    if session_id:
+        chat_statuses[session_id] = "✍️ Yanıt oluşturuluyor..."
     response = ollama.chat(model=MODEL_NAME, messages=state['messages'])
     return {"final_output": response['message']['content']}
 
