@@ -12,6 +12,9 @@ class AppContext:
 # Ortak context objesi
 ctx = AppContext()
 
+# Ortak durum takibi için global sözlük
+chat_statuses = {}
+
 # Ortak tip tanımı
 class GraphState(TypedDict):
     prompt: str
@@ -22,3 +25,4 @@ class GraphState(TypedDict):
     tools: List[dict]
     tool_calls: Optional[List[dict]]   # Hangi tool'lar çağrıldı, hangi argümanlarla
     tool_results: Optional[List[dict]] # MCP server'dan dönen ham veriler
+    session_id: Optional[str]          # İstek oturum ID'si
