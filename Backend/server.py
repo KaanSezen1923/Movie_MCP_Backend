@@ -123,6 +123,12 @@ def search_movies_by_filters(
     """
     Belirli kriterlere göre film araması yapar. 
     LLM bu aracı; kullanıcı bir aktör, yönetmen, tür veya minimum puan belirttiğinde kullanır.
+
+    genre_name: Tek tür ("Fantasy") veya virgülle ayrılmış BİRDEN FAZLA tür 
+    ("Science Fiction,Fantasy") olabilir. Birden fazla tür verilirse OR mantığıyla 
+    (bu türlerden HERHANGİ birine sahip filmler) arama yapılır. Kullanıcı 
+    "bilim kurgu ve fantastik" gibi iki tür istediğinde bunları TEK bir çağrıda, 
+    virgülle ayırarak buraya yazın — iki ayrı arama yapmayın.
     """
     discover_url = f"{BASE_URL}/discover/movie"
     params = {
@@ -133,8 +139,14 @@ def search_movies_by_filters(
     }
 
     if genre_name:
-        gid = GENRE_DICT.get(genre_name.title())
-        if gid: params["with_genres"] = gid
+        genre_ids = []
+        for g in genre_name.split(","):
+            gid = GENRE_DICT.get(g.strip().title())
+            if gid:
+                genre_ids.append(str(gid))
+        if genre_ids:
+            # "|" -> OR mantığı (TMDB discover API kuralı): bu türlerden herhangi biri
+            params["with_genres"] = "|".join(genre_ids)
 
     if actor_name:
         aid = get_person_id(actor_name)
