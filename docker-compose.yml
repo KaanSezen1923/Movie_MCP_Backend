@@ -1,0 +1,35 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: movie_recommendation_api
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./.env
+    environment:
+      # Veritabanı yerel makinedeyse 'host.docker.internal' üzerinden bağlanmasını sağlarız
+      - DB_HOST=host.docker.internal
+      # Ollama yerel makinedeyse container'dan erişim sağlamak için OLLAMA_HOST tanımlarız
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: always
+
+  # Opsiyonel: Veritabanını da docker üzerinde çalıştırmak isterseniz aşağıdaki yorum satırlarını kaldırabilirsiniz:
+  # db:
+  #   image: postgres:15-alpine
+  #   container_name: movie_recommendation_db
+  #   environment:
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_PASSWORD: kaan1923
+  #     POSTGRES_DB: Movie_MCP
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   restart: always
+
+# volumes:
+#   pgdata:
