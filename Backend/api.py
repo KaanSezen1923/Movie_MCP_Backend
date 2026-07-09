@@ -942,4 +942,4 @@ async def send_random_notifications():
 
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=3000, reload=True)
+    uvicorn.run("api:app", host="0.0.0.0", port=3000)
